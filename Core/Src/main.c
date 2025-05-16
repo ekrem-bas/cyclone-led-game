@@ -391,52 +391,73 @@ void play_flash_animation() {
 
 // Tüm LED'lerin parlaklığını azaltır (FastLED'deki fadeall gibi)
 void apply_fade_to_all_leds() {
+    // Daha nazik bir soluklaştırma deneyin, kuyruk biraz daha uzun kalır.
+    uint8_t fade_amount = 245; // 220 yerine 240, 245 gibi değerler deneyin
     for (int i = 0; i < NUM_LEDS; i++) {
-        led_strip[i].r = (led_strip[i].r * 250) / 256;
-        led_strip[i].g = (led_strip[i].g * 250) / 256;
-        led_strip[i].b = (led_strip[i].b * 250) / 256;
+        led_strip[i].r = (uint32_t)led_strip[i].r * fade_amount / 256;
+        led_strip[i].g = (uint32_t)led_strip[i].g * fade_amount / 256;
+        led_strip[i].b = (uint32_t)led_strip[i].b * fade_amount / 256;
     }
 }
 
+// Helper function to generate a color from a 0-255 position on a color wheel
+// Pozisyon 0-255 arası bir değer alır ve bir gökkuşağı rengi döndürür.
+void rgb_color_wheel(uint8_t wheel_pos, RGBColor* color) {
+    wheel_pos = 255 - wheel_pos; // Renk döngüsünün yönünü değiştirebilirsiniz (isteğe bağlı)
+    if (wheel_pos < 85) {
+        color->r = 255 - wheel_pos * 3;
+        color->g = 0;
+        color->b = wheel_pos * 3;
+    } else if (wheel_pos < 170) {
+        wheel_pos -= 85;
+        color->r = 0;
+        color->g = wheel_pos * 3;
+        color->b = 255 - wheel_pos * 3;
+    } else {
+        wheel_pos -= 170;
+        color->r = wheel_pos * 3;
+        color->g = 255 - wheel_pos * 3;
+        color->b = 0;
+    }
+    // Not: Bu fonksiyonun ürettiği renkler tam parlaklıktadır (bir bileşen 255'e ulaşır).
+    // Global parlaklık (global_brightness) daha sonra update_led_strip_to_physical_leds içinde uygulanacaktır.
+    // Eğer bu animasyonun kendi parlaklığını ayrıca kısmak isterseniz,
+    // burada üretilen r,g,b değerlerini bir miktar ölçekleyebilirsiniz.
+    // Örn: color->r = color->r * anim_brightness_scale / 255; (anim_brightness_scale < 255)
+}
 // Kazanma durumunda Cylon LED animasyonu
+// Kazanma durumunda Cylon LED animasyonu (RGB Renk Tekerleği ile)
 void play_cylon_animation() {
-    // Animasyonun genel başlangıç rengi (HSV renk skalasında 0-255 arası).
-    // 85 yaklaşık yeşil, 42 yaklaşık sarı, 0 kırmızı, 170 mavi.
-    // 'static' olduğu için her çağrıda değeri korunur ve güncellenir.
-    static uint8_t base_hue_for_pass = 85; // İlk animasyon yeşil tonlarında başlasın
+    static uint8_t wheel_position = 0; // Renk tekerleğindeki mevcut pozisyon, çağrılar arasında devam eder.
 
-    RGBColor current_sweep_color;
-    uint8_t saturation = 255; // Tam doygunluk
-    uint8_t value = 255;      // Tam parlaklık (HSV için). Global parlaklık ayrıca uygulanacak.
-                               // Eğer Cylon animasyonu genel olarak çok parlaksa, bu 'value' değerini düşürebilirsiniz (örn: 200).
+    // Animasyon adımları arasındaki gecikme (ms).
+    // Arduino'daki delay(10)'a karşılık gelir. Gerekirse artırılabilir.
+    uint16_t step_delay = 10;
 
-    // Bu play_cylon_animation çağrısı için ana rengi belirle
-    hsvToRgb(base_hue_for_pass, saturation, value, &current_sweep_color);
-
-    // Kayma efekti adımları arasındaki gecikme (ms). Artırırsanız yavaşlar.
-    uint16_t sweep_delay = 15; // Örnek: 15ms
-
-    // İleri yönde kayma
+    // İleri yönde
     for (int i = 0; i < NUM_LEDS; i++) {
-        // Sadece kayan LED'i mevcut ana renge ayarla
-        set_led_color_in_strip(i, current_sweep_color.r, current_sweep_color.g, current_sweep_color.b);
-        update_led_strip_to_physical_leds(); // Değişiklikleri LED'lere gönder
-        apply_fade_to_all_leds(); // Diğer tüm LED'leri biraz söndürerek kuyruk etkisi oluştur
-        HAL_Delay(sweep_delay);
-    }
+        RGBColor current_color;
+        // Her LED için renk tekerleğinden bir sonraki rengi al
+        // wheel_position uint8_t olduğu için 255'ten sonra otomatik olarak 0'a döner.
+        rgb_color_wheel(wheel_position++, &current_color);
 
-    // Geri yönde kayma
-    for (int i = (NUM_LEDS) - 1; i >= 0; i--) {
-        set_led_color_in_strip(i, current_sweep_color.r, current_sweep_color.g, current_sweep_color.b);
+        set_led_color_in_strip(i, current_color.r, current_color.g, current_color.b);
         update_led_strip_to_physical_leds();
-        apply_fade_to_all_leds();
-        HAL_Delay(sweep_delay);
+        // BUNU YAPINCA LEDLERIN RENKLERI BOZULUYO
+//        apply_fade_to_all_leds(); // Kuyruk efekti için (fade_amount'ı deneyerek ayarlayın)
+        HAL_Delay(step_delay);
     }
 
-    // Bir sonraki play_cylon_animation çağrısı için ana rengi (hue) değiştir.
-    // Bu artış miktarı renk geçişlerini belirler. 255/6 ~ 42 (yaklaşık 6 ana renk döngüsü için)
-    base_hue_for_pass += 42;
-    // base_hue_for_pass değişkeni uint8_t olduğu için 255'i geçince otomatik olarak başa dönecektir (örn: 250 + 42 = 292 -> 36 olur).
+    // Geri yönde
+    for (int i = (NUM_LEDS) - 1; i >= 0; i--) {
+        RGBColor current_color;
+        rgb_color_wheel(wheel_position++, &current_color);
+
+        set_led_color_in_strip(i, current_color.r, current_color.g, current_color.b);
+        update_led_strip_to_physical_leds();
+//        apply_fade_to_all_leds();
+        HAL_Delay(step_delay);
+    }
 }
 
 // -----------------------------------------------------------
