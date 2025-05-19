@@ -22,6 +22,9 @@
 #include "stm32f0xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdlib.h> // abs() fonksiyonu için
+#include <stdbool.h> // bool veri tipi için
+#include <stdint.h>  // uint8_t, uint16_t gibi tipler için
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,7 +54,9 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+extern volatile bool Playing;
+extern volatile bool CycleEnded;
+extern uint32_t last_button_interrupt_time;
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -139,6 +144,20 @@ void SysTick_Handler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32f0xx.s).                    */
 /******************************************************************************/
+
+/**
+  * @brief This function handles EXTI line 0 and 1 interrupts.
+  */
+void EXTI0_1_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI0_1_IRQn 0 */
+
+  /* USER CODE END EXTI0_1_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);
+  /* USER CODE BEGIN EXTI0_1_IRQn 1 */
+
+  /* USER CODE END EXTI0_1_IRQn 1 */
+}
 
 /**
   * @brief This function handles DMA1 channel 4 and 5 interrupts.

@@ -18,13 +18,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include <stdlib.h> // abs() fonksiyonu için
-#include <stdbool.h> // bool veri tipi için
-#include <stdint.h>  // uint8_t, uint16_t gibi tipler için
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdlib.h> // abs() fonksiyonu için
+#include <stdbool.h> // bool veri tipi için
+#include <stdint.h>  // uint8_t, uint16_t gibi tipler için
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -115,6 +114,13 @@ void ws2812Send(void) {
 // GEMINI OYUN KODU
 // -----------------------------------------------------------
 // Arduino kodundan gelen tanımlar
+
+volatile bool Playing = true;      // volatile olarak işaretlendi
+volatile bool CycleEnded = true;   // volatile olarak işaretlendi
+uint32_t last_button_interrupt_time = 0; // Debounce için
+#define DEBOUNCE_TIME_MS 100         // 50ms debounce süresi (ayarlayabilirsiniz)
+
+
 #define NUM_LEDS noOfLEDs // Arduino NUM_LEDS yerine noOfLEDs kullanalım
 #define CENTER_LED 21
 #define BRIGHTNESS 50 // Parlaklık (0-255 ölçeğinde düşünülerek uygulanacak)
@@ -133,14 +139,10 @@ void ws2812Send(void) {
 int difficulty = EASY; // Başlangıç zorluğu EASY
 bool wonThisRound = false;
 int LEDaddress = 0;
-bool Playing = true;
-bool CycleEnded = true; // Arduino kodundaki gibi, bir sonraki döngüde işlenip işlenmeyeceğini kontrol eder
 
-// Buton tanımları (STM32'ye özel ayarlanmalı)
-#define BUTTON_GPIO_Port GPIOA // Örnek GPIO Portu
-#define BUTTON_Pin GPIO_PIN_0   // Örnek GPIO Pini
-// Butona basıldığında pinin durumu (pull-up ise GPIO_PIN_RESET, pull-down veya aktif HIGH ise GPIO_PIN_SET)
-// Arduino kodu buttonState == HIGH kullandığı için, burada da HIGH durumunu (GPIO_PIN_SET) varsayıyoruz.
+
+#define BUTTON_GPIO_Port GPIOA
+#define BUTTON_Pin GPIO_PIN_0
 #define BUTTON_PRESSED_STATE GPIO_PIN_SET
 
 uint32_t last_led_advance_time = 0;
@@ -237,23 +239,14 @@ void game_setup(void) {
 
 // Ana oyun döngüsü
 void game_loop(void) {
-    GPIO_PinState currentButtonState = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin);
+    // GPIO_PinState currentButtonState = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin); // KALDIRILDI
 
-    // OYUN SONU MANTIĞI (Arduino kodundaki buttonState == HIGH kontrolüne göre)
-    // Orijinal kodda, loop'un başında buttonState kontrol ediliyor ve Playing = false yapılıyordu.
-    // Bu, butona basıldığında oyunun durduğu ve sonucun işlendiği anlamına gelir.
-    // Sonra buton bırakılana kadar bekleyip Playing = true yapar.
-
-    // Eğer butona basıldıysa (ve oyun oynanıyorsa) veya oyun zaten durmuşsa (önceki basıştan dolayı)
-    if (currentButtonState == BUTTON_PRESSED_STATE && Playing) {
-        Playing = false;    // Oyunu durdur
-        CycleEnded = true;  // Sonucun işlenmesi için bayrağı ayarla
-    }
-
-    if (!Playing) { // Oyun durmuşsa (buton basılmış ve bırakılmamış olabilir)
+    // OYUN SONU MANTIĞI
+    // Interrupt, Playing'i false yapar. Bu blok şimdi Playing false olduğunda çalışır.
+    if (!Playing) {
         // Bu blok, Arduino kodundaki `if (buttonState == HIGH)` içindeki kısma karşılık gelir.
         // Sadece bir kez çalışması gereken win/loss kontrolü
-        if (CycleEnded) { // Arduino'daki `if (CycleEnded = true)` (atama) mantığını taklit eder: bir kez çalışır.
+        if (CycleEnded) { // Interrupt tarafından true yapıldıysa
             // Hedef LED ve seçilen LED dışındaki tüm LED'leri kapat
             for (int i = 0; i < NUM_LEDS; i++) {
                 set_led_color_in_strip(i, 0, 0, 0); // Siyah
@@ -273,12 +266,12 @@ void game_loop(void) {
                     for (int i = 0; i < 8; i++) {
                         play_cylon_animation();
                     }
-                    difficulty = 0; // Zorluk sıfırlanır (sonra increase_game_difficulty ile 1 olur)
+                    difficulty = 0;
                 }
                 increase_game_difficulty();
-                wonThisRound = false; // Bir sonraki tur için sıfırla
+                wonThisRound = false;
             } else { // KAYBETTİ
-                HAL_Delay(1000);
+                HAL_Delay(1000); // Bu gecikme hala burada, oyun durmuşken sorun olmaz
                 for (int i = 0; i < 2; i++) {
                     play_flash_animation();
                 }
@@ -288,59 +281,56 @@ void game_loop(void) {
         }
 
         // Buton bırakılana kadar bekle (yeniden başlatmak için)
-        // Arduino kodunda: buttonState = digitalRead(buttonPin); if (buttonState == LOW) { Playing = true; }
-        // Biz burada doğrudan güncel durumu okuyoruz.
-        GPIO_PinState newButtonStateAfterDelay = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin);
-        if (newButtonStateAfterDelay != BUTTON_PRESSED_STATE) { // Buton bırakıldıysa
+        GPIO_PinState button_release_check = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin);
+        // PULLDOWN konfigürasyonunda, bırakıldığında RESET (LOW) olur.
+        if (button_release_check == GPIO_PIN_RESET) { // Buton bırakıldıysa
             Playing = true;       // Oyunu yeniden başlat
             LEDaddress = 0;       // LED adresini sıfırla
-            HAL_Delay(250);       // Kısa bir bekleme (Arduino kodundaki gibi)
+            HAL_Delay(10);       // Kısa bir bekleme
 
-            // Yeni tur için LED'leri hazırla
             fill_strip_solid(0,0,0);
-            set_led_color_in_strip(CENTER_LED, 255, 0, 0); // Merkez LED Kırmızı
-            // İlk hareket eden LED game_loop'un PLAYING kısmında ayarlanacak.
+            set_led_color_in_strip(CENTER_LED, 255, 0, 0);
             update_led_strip_to_physical_leds();
+            // Bir sonraki game_loop turunda Playing true olacağı için LED'ler hareket etmeye başlayacak.
+            HAL_Delay(10);
         }
     }
 
     // OYNANIŞ MANTIĞI
     if (Playing) {
         for (int i = 0; i < NUM_LEDS; i++) {
-            set_led_color_in_strip(i, 0, 0, 0); // Tüm LED'ler siyah
+            set_led_color_in_strip(i, 0, 0, 0);
         }
-        set_led_color_in_strip(CENTER_LED, 255, 0, 0); // Merkez LED Kırmızı
-        set_led_color_in_strip(LEDaddress, 0, 255, 0);  // Dönen LED Yeşil
+        set_led_color_in_strip(CENTER_LED, 255, 0, 0);
+        set_led_color_in_strip(LEDaddress, 0, 255, 0);
         update_led_strip_to_physical_leds();
 
         LEDaddress++;
         if (LEDaddress == NUM_LEDS) {
             LEDaddress = 0;
         }
-        HAL_Delay(getTime(difficulty));
+        HAL_Delay(getTime(difficulty)); // Bu gecikme artık buton tepkisini etkilemeyecek
 
-        // Oynanış sırasında butona basılırsa, yukarıdaki !Playing bloğu bir sonraki döngüde durumu ele alacak.
-        // currentButtonState zaten döngünün başında okunmuştu, onu tekrar kontrol edebiliriz.
-        GPIO_PinState playingButtonCheck = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin);
-        if (playingButtonCheck == BUTTON_PRESSED_STATE) {
-            Playing = false;    // Oyunu durdur
-            CycleEnded = true;  // Sonucun işlenmesi için bayrağı ayarla
-        }
+        // Oynanış sırasında butona basılırsa interrupt Playing'i false yapacak.
+        // GPIO_PinState playingButtonCheck = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin); // KALDIRILDI
+        // if (playingButtonCheck == BUTTON_PRESSED_STATE) { // KALDIRILDI
+        //     Playing = false;    // KALDIRILDI
+        //     CycleEnded = true;  // KALDIRILDI
+        // } // KALDIRILDI
     }
 }
-
 // Zorluğa göre LED hareket gecikmesini döndürür
 int getTime(int diff_level) {
     int timeValue = 0;
     switch (diff_level) {
-        case EASY: timeValue = 100; break;
-        case MEDIUM: timeValue = 80; break;
-        case HARD: timeValue = 60; break;
-        case ON_SPEED: timeValue = 40; break;
-        case SONIC_SPEED: timeValue = 30; break;
-        case ROCKET_SPEED: timeValue = 20; break;
-        case LIGHT_SPEED: timeValue = 13; break;
-        case MISSION_IMPOSSIBLE: timeValue = 7; break;
+        case EASY: timeValue = 200; break;
+        case MEDIUM: timeValue = 150; break;
+        case HARD: timeValue = 100; break;
+        case ON_SPEED: timeValue = 80; break;
+        case SONIC_SPEED: timeValue = 60; break;
+        case ROCKET_SPEED: timeValue = 50; break;
+        case LIGHT_SPEED: timeValue = 30; break;
+        case MISSION_IMPOSSIBLE: timeValue = 20; break;
         default: timeValue = 100; // Hata durumunda varsayılan
     }
     return timeValue;
@@ -475,6 +465,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+	LEDaddress = 0; // Oyun başlamadan hemen önce kesin olarak 0'a ayarla
 
   /* USER CODE END 1 */
 
@@ -501,6 +492,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   game_setup();
+  HAL_Delay(10); // WS2812B reset/hazırlık süresi için
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -646,9 +638,13 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : PA0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_1_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -656,7 +652,30 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == BUTTON_Pin) // Bizim butonumuz mu?
+  {
+    uint32_t current_time = HAL_GetTick();
+    if (current_time - last_button_interrupt_time > DEBOUNCE_TIME_MS)
+    {
+      last_button_interrupt_time = current_time;
 
+      // Orijinal koddaki `if (currentButtonState == BUTTON_PRESSED_STATE && Playing)` mantığı
+      if (Playing) // Eğer oyun zaten oynanıyorsa, butona basış oyunu durdurur
+      {
+        Playing = false;    // Oyunu durdur (bu bayrak game_loop tarafından okunacak)
+        CycleEnded = true;  // Sonucun işlenmesi için bayrağı ayarla
+      }
+      // Butona basıldığında oyun durmuşsa ve yeniden başlatma bekleniyorsa,
+      // bu durum game_loop içinde butonun BIRAKILMASIYLA ele alınacak.
+      // Interrupt sadece "basılma" anını yakalar.
+      // Eğer basılı tutarken bir şeylerin değişmesini istemiyorsanız, bu yeterli.
+      // Eğer butona basar basmaz yeniden başlatma (Playing = true) olsaydı,
+      // o zaman buraya ek bir mantık gerekirdi. Ama mevcut oyun akışınız buna uygun değil.
+    }
+  }
+}
 /* USER CODE END 4 */
 
 /**
