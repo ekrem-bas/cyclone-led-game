@@ -149,6 +149,10 @@ uint32_t last_led_advance_time = 0;
 // uint32_t button_press_time = 0; // Eğer kullanmıyorsanız bu satırı silebilirsiniz.
 bool button_currently_pressed_flag = false;
 
+static uint32_t button_seen_released_at_tick = 0; // Butonun BIRAKILDIĞI ilk görüldüğü zaman
+static bool waiting_for_stable_release = false;   // Kararlı bir bırakılma bekleniyor mu?
+#define STABLE_RELEASE_DURATION_MS 50             // Butonun kararlı şekilde bırakılmış sayılması için gereken süre (ms)
+
 // LED renklerini tutmak için bir yapı ve dizi
 typedef struct {
     uint8_t r;
@@ -239,14 +243,8 @@ void game_setup(void) {
 
 // Ana oyun döngüsü
 void game_loop(void) {
-    // GPIO_PinState currentButtonState = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin); // KALDIRILDI
-
-    // OYUN SONU MANTIĞI
-    // Interrupt, Playing'i false yapar. Bu blok şimdi Playing false olduğunda çalışır.
-    if (!Playing) {
-        // Bu blok, Arduino kodundaki `if (buttonState == HIGH)` içindeki kısma karşılık gelir.
-        // Sadece bir kez çalışması gereken win/loss kontrolü
-        if (CycleEnded) { // Interrupt tarafından true yapıldıysa
+    if (!Playing) { // Oyun durmuşsa (ISR tarafından Playing=false yapıldı)
+        if (CycleEnded) { // ISR, CycleEnded=true yaptı, yani sonucu değerlendirmemiz gerekiyor
             // Hedef LED ve seçilen LED dışındaki tüm LED'leri kapat
             for (int i = 0; i < NUM_LEDS; i++) {
                 set_led_color_in_strip(i, 0, 0, 0); // Siyah
@@ -259,45 +257,56 @@ void game_loop(void) {
             if (diff == 0) { // KAZANDI
                 wonThisRound = true;
                 if (difficulty != MISSION_IMPOSSIBLE) {
-                    for (int i = 0; i < 2; i++) {
-                        play_cylon_animation();
-                    }
-                } else { // MISSION_IMPOSSIBLE kazanıldı
-                    for (int i = 0; i < 8; i++) {
-                        play_cylon_animation();
-                    }
+                    for (int i = 0; i < 2; i++) { play_cylon_animation(); }
+                } else {
+                    for (int i = 0; i < 8; i++) { play_cylon_animation(); }
                     difficulty = 0;
                 }
                 increase_game_difficulty();
                 wonThisRound = false;
             } else { // KAYBETTİ
-                HAL_Delay(1000); // Bu gecikme hala burada, oyun durmuşken sorun olmaz
-                for (int i = 0; i < 2; i++) {
-                    play_flash_animation();
-                }
+                HAL_Delay(1000);
+                for (int i = 0; i < 2; i++) { play_flash_animation(); }
                 difficulty = 1;
             }
             CycleEnded = false; // Bu kazanma/kaybetme durumu işlendi
+            waiting_for_stable_release = false; // Yeniden başlatma için kararlı bırakma bayrağını sıfırla
         }
 
-        // Buton bırakılana kadar bekle (yeniden başlatmak için)
-        GPIO_PinState button_release_check = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin);
-        // PULLDOWN konfigürasyonunda, bırakıldığında RESET (LOW) olur.
-        if (button_release_check == GPIO_PIN_RESET) { // Buton bırakıldıysa
-            Playing = true;       // Oyunu yeniden başlat
-            LEDaddress = 0;       // LED adresini sıfırla
-            HAL_Delay(10);       // Kısa bir bekleme
+        // CycleEnded false ise (animasyonlar bitti), butonun bırakılmasını bekle ve oyunu yeniden başlat
+        GPIO_PinState current_button_state = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin);
 
-            fill_strip_solid(0,0,0);
-            set_led_color_in_strip(CENTER_LED, 255, 0, 0);
-            update_led_strip_to_physical_leds();
-            // Bir sonraki game_loop turunda Playing true olacağı için LED'ler hareket etmeye başlayacak.
-            HAL_Delay(10);
+        if (current_button_state == GPIO_PIN_RESET) { // Buton şu an BIRAKILMIŞ (LOW) görünüyor
+            if (!waiting_for_stable_release) {
+                // Butonu BIRAKILMIŞ olarak ilk kez görüyoruz (veya bir sıçrama sonrası tekrar BIRAKILMIŞ oldu)
+                waiting_for_stable_release = true;
+                button_seen_released_at_tick = HAL_GetTick(); // Zamanı kaydet
+            } else {
+                // Zaten BIRAKILMIŞ olarak görmüştük, şimdi yeterince uzun süre öyle kalıp kalmadığını kontrol et
+                if (HAL_GetTick() - button_seen_released_at_tick > STABLE_RELEASE_DURATION_MS) {
+                    // Evet, buton STABLE_RELEASE_DURATION_MS süresince bırakılmış durumda kaldı. Oyunu yeniden başlat.
+                    Playing = true;       // Oyunu yeniden başlat
+                    LEDaddress = 0;       // LED adresini sıfırla
+                    HAL_Delay(10);        // Kısa bir bekleme
+
+                    fill_strip_solid(0,0,0);
+                    set_led_color_in_strip(CENTER_LED, 255, 0, 0); // Merkezi kırmızı yap
+                    // set_led_color_in_strip(0, 0, 255, 0); // İlk LED'i yeşil yapmaya gerek yok, Playing=true döngüsü halledecek
+                    update_led_strip_to_physical_leds();
+                    HAL_Delay(10);
+
+                    waiting_for_stable_release = false; // Bir sonraki döngü için bayrağı sıfırla
+                }
+            }
+        } else { // Buton şu an BASILI (HIGH) görünüyor (ya hala basılı tutuluyor ya da sıçradı)
+            // Eğer kararlı bir bırakılma bekliyorduk ama buton tekrar HIGH olduysa, bekleme durumunu sıfırla.
+            if (waiting_for_stable_release) {
+                waiting_for_stable_release = false;
+            }
         }
-    }
+    } // if (!Playing) sonu
 
-    // OYNANIŞ MANTIĞI
-    if (Playing) {
+    if (Playing) { // Oyun oynanış mantığı (bu kısım değişmiyor)
         for (int i = 0; i < NUM_LEDS; i++) {
             set_led_color_in_strip(i, 0, 0, 0);
         }
@@ -309,16 +318,9 @@ void game_loop(void) {
         if (LEDaddress == NUM_LEDS) {
             LEDaddress = 0;
         }
-        HAL_Delay(getTime(difficulty)); // Bu gecikme artık buton tepkisini etkilemeyecek
-
-        // Oynanış sırasında butona basılırsa interrupt Playing'i false yapacak.
-        // GPIO_PinState playingButtonCheck = HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin); // KALDIRILDI
-        // if (playingButtonCheck == BUTTON_PRESSED_STATE) { // KALDIRILDI
-        //     Playing = false;    // KALDIRILDI
-        //     CycleEnded = true;  // KALDIRILDI
-        // } // KALDIRILDI
+        HAL_Delay(getTime(difficulty));
     }
-}
+} // game_loop sonu
 // Zorluğa göre LED hareket gecikmesini döndürür
 int getTime(int diff_level) {
     int timeValue = 0;
@@ -654,27 +656,20 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == BUTTON_Pin) // Bizim butonumuz mu?
-  {
-    uint32_t current_time = HAL_GetTick();
-    if (current_time - last_button_interrupt_time > DEBOUNCE_TIME_MS)
-    {
-      last_button_interrupt_time = current_time;
+	if (GPIO_Pin == BUTTON_Pin) // Bizim butonumuz mu?
+	  {
+	    uint32_t current_time = HAL_GetTick();
+	    if (current_time - last_button_interrupt_time > DEBOUNCE_TIME_MS) // DEBOUNCE_TIME_MS (örn: 100ms)
+	    {
+	      last_button_interrupt_time = current_time;
 
-      // Orijinal koddaki `if (currentButtonState == BUTTON_PRESSED_STATE && Playing)` mantığı
-      if (Playing) // Eğer oyun zaten oynanıyorsa, butona basış oyunu durdurur
-      {
-        Playing = false;    // Oyunu durdur (bu bayrak game_loop tarafından okunacak)
-        CycleEnded = true;  // Sonucun işlenmesi için bayrağı ayarla
-      }
-      // Butona basıldığında oyun durmuşsa ve yeniden başlatma bekleniyorsa,
-      // bu durum game_loop içinde butonun BIRAKILMASIYLA ele alınacak.
-      // Interrupt sadece "basılma" anını yakalar.
-      // Eğer basılı tutarken bir şeylerin değişmesini istemiyorsanız, bu yeterli.
-      // Eğer butona basar basmaz yeniden başlatma (Playing = true) olsaydı,
-      // o zaman buraya ek bir mantık gerekirdi. Ama mevcut oyun akışınız buna uygun değil.
-    }
-  }
+	      if (Playing) // Eğer oyun zaten oynanıyorsa (LED'ler hareket ediyorsa)
+	      {
+	        Playing = false;    // Oyunu durdur
+	        CycleEnded = true;  // Sonucun işlenmesi için bayrağı ayarla
+	      }
+	    }
+	  }
 }
 /* USER CODE END 4 */
 
