@@ -63,7 +63,7 @@ static void MX_TIM3_Init(void);
 /* USER CODE BEGIN 0 */
 
 #define noOfLEDs 40
-uint16_t pwmData[24 * noOfLEDs]; // Bu dizi main.c'de tanımlı olmalı
+uint16_t pwmData[24 * noOfLEDs + 50]; // Bu dizi main.c'de tanımlı olmalı
 
 // -----------------------------------------------------------
 // WS2812 TEST FONSKIYONLARI
@@ -105,7 +105,7 @@ void setLED(int LEDposition, int Red, int Green, int Blue) {
 // DMA baslatan fonksiyon
 void ws2812Send(void) {
 	HAL_TIM_PWM_Start_DMA(&htim3, TIM_CHANNEL_1, (uint32_t*) pwmData,
-			24 * noOfLEDs);
+			24 * noOfLEDs + 50);
 }
 // -----------------------------------------------------------
 // WS2812 TEST FONKSIYONLARI SON
@@ -282,6 +282,7 @@ void game_loop(void) {
                 for (int i = 0; i < 2; i++) {
                     play_flash_animation();
                 }
+                difficulty = 1;
             }
             CycleEnded = false; // Bu kazanma/kaybetme durumu işlendi
         }
